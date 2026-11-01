@@ -10,6 +10,7 @@ It uses OpenCV for image processing and ANSI escape codes to colorize each ASCII
 - 🌈 Supports **true RGB colors** in the terminal
 - ⚙️ Automatically scales the image to fit your console
 - 🧮 Brightness-based ASCII mapping for accurate results
+- ⌨️ Pass the image on the command line — no code editing or rebuilding needed
 - 🧠 Easy to customize: you can change the ASCII ramp, size, or scaling
 
 ---
@@ -18,7 +19,8 @@ It uses OpenCV for image processing and ANSI escape codes to colorize each ASCII
 
 Make sure you have:
 - **C++17 or later**
-- **OpenCV 4.x** installed
+- **OpenCV 4.x** installed (the repo includes the OpenCV 4.12 headers and `.lib` files)
+- The **OpenCV runtime DLL** (`opencv_world4120.dll`) available at runtime — see [Runtime DLL](#-runtime-dll)
 - A terminal that supports **ANSI 24-bit colors**
 
 ---
@@ -32,12 +34,21 @@ cd ascii-art-generator
 ```
 
 ### 2. Build the project:
-If you’re using **g++**:
+
+**Visual Studio (this repository):**
+```bash
+msbuild LearningOpenCV.sln /p:Configuration=Release /p:Platform=x64
+```
+Or open `LearningOpenCV.sln` in Visual Studio and build **Release | x64**.
+
+The executable ends up in `x64\Release\LearningOpenCV.exe`.
+
+**With g++:**
 ```bash
 g++ -std=c++17 main.cpp -o ascii -lopencv_core -lopencv_imgproc -lopencv_imgcodecs -lopencv_highgui
 ```
 
-If you’re using **CMake**, create a `CMakeLists.txt`:
+**With CMake**, create a `CMakeLists.txt`:
 ```cmake
 cmake_minimum_required(VERSION 3.10)
 project(AsciiArt)
@@ -55,32 +66,66 @@ make
 ---
 
 ## 🖼️ Usage
-Place your image in the `Resources` folder (or adjust the path in code):
-```cpp
- // Path to the image (adjust to your setup)
-std::string path = "Resources/ronaldoAndMessi.jpg";
-```
 
-Then run:
+Pass the image path as the only argument:
+
 ```bash
-./ascii
+run.cmd Resources\ronaldoAndMessi.jpg
+run.cmd "C:\Users\me\Pictures\my photo.png"
 ```
 
-You’ll see a beautiful ASCII representation of your image in the console 🌈
+`run.cmd` is a small wrapper at the repo root that:
+- works from any directory,
+- builds **Release x64** once with MSBuild if no executable exists yet,
+- lets you **drag an image file onto `run.cmd`** in Explorer,
+- forwards your arguments and the program's exit code.
+
+You can also call the executable directly:
+
+```bash
+x64\Release\LearningOpenCV.exe path\to\image.jpg
+```
+
+Other commands:
+
+```bash
+run.cmd --help                         # usage and exit codes
+run.cmd path\to\image.jpg > art.txt    # save the art (colors included) to a file
+```
+
+### Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| 0 | Success |
+| 1 | The image could not be loaded |
+| 2 | Invalid command line (missing image or unknown option) |
+
+Paths containing spaces must be quoted. Both `/` and `\` work as separators.
+
+---
+
+## 📦 Runtime DLL
+
+OpenCV is linked dynamically, so the program needs `opencv_world4120.dll` (Release) or `opencv_world4120d.dll` (Debug) when it starts. The repo only contains the import libraries, not the DLL. Put it in either place:
+
+- `Dependencies\OpenCV\bin\` — `run.cmd` adds this folder to `PATH` automatically, or
+- next to `LearningOpenCV.exe`, or
+- anywhere on your system `PATH`.
+
+If the DLL is missing, `run.cmd` reports it instead of failing silently.
 
 ---
 
 ## ⚙️ Customization
 
-You can tweak the ASCII ramp for more or less brightness sensitivity:
+The defaults live at the top of `LearningOpenCV/main.cpp`:
 ```cpp
-std::string asciiRamp = " .`'^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$@█▓▒░";
+constexpr char kAsciiRamp[] = " .`'^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$@█▓▒░";
+constexpr int kConsoleWidth = 220;  // characters per line
+constexpr double kCharAspect = 1.0; // tweak if the output looks stretched
 ```
-
-You can also change output size:
-```cpp
-int consoleWidth = 100; // wider output
-```
+Change them there for now; they are the intended hook for future `--width`, `--chars`, and `--aspect` flags.
 
 ---
 
@@ -93,6 +138,7 @@ int consoleWidth = 100; // wider output
 - Add **auto-detection** for terminal width/height
 - Add **grayscale preview** mode
 - Add **video-to-ASCII** conversion
+- Add flags for width, character ramp, aspect ratio, and saving to a file
 
 ---
 

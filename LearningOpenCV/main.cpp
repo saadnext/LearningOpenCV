@@ -14,6 +14,9 @@
     and ANSI escape codes to colorize characters according to the original 
     pixel RGB values.
 
+    The image is passed on the command line, so there is no need to edit and
+    rebuild the source to convert a different picture.
+
     Requirements:
     -------------
     - OpenCV 4.x or later
@@ -23,84 +26,199 @@
     Example usage:
     --------------
     > g++ -std=c++17 main.cpp -o ascii -lopencv_core -lopencv_imgproc -lopencv_imgcodecs
-    > ./ascii
+    > ./ascii path/to/image.jpg
 ===============================================================================
 */
 
+#include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
-#include <opencv2/highgui.hpp>
-#include <opencv2/imgproc.hpp>
+
+#include <algorithm>
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <string>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX  // keep windows.h from breaking std::min/std::max
+#endif
+#include <windows.h>
+#endif
 
 using namespace cv;
 
-int main() {
-    // Path to the image (adjust to your setup)
-    std::string path = "Resources/ronaldoAndMessi.jpg";
+namespace {
 
-    // ASCII ramp sorted from brightest (left) to darkest (right)
-    // More characters = higher detail in brightness representation
-    std::string asciiRamp = 
-        " .`'^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$@█▓▒░";
+// ASCII ramp sorted from brightest (left) to darkest (right).
+// More characters = higher detail in brightness representation.
+constexpr char kAsciiRamp[] =
+    " .`'^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$@█▓▒░";
 
-    // Load image using OpenCV
-    Mat img = imread(path);
-    if (img.empty()) {
-        std::cerr << "Error: Could not open or find the image." << std::endl;
-        return -1;
+// Number of entries in the ramp (the trailing '\0' is not a character).
+constexpr std::size_t kRampSize = std::size(kAsciiRamp) - 1;
+
+// Desired output width (number of characters per line).
+constexpr int kConsoleWidth = 220;
+
+// Character aspect ratio (fine-tune this if the output looks stretched).
+constexpr double kCharAspect = 1.0;
+
+std::string programName(const char* argv0) {
+    const std::string path = argv0 ? argv0 : "LearningOpenCV";
+    const std::size_t slash = path.find_last_of("\\/");
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+void printUsage(std::ostream& out, const char* argv0) {
+    const std::string name = programName(argv0);
+
+    out << "ASCII Art Generator - C++ + OpenCV\n"
+        << "\n"
+        << "Usage:\n"
+        << "  " << name << " <image>\n"
+        << "\n"
+        << "Arguments:\n"
+        << "  <image>       Path to the input image. Quote it if the path\n"
+        << "                contains spaces.\n"
+        << "\n"
+        << "Options:\n"
+        << "  -h, --help    Show this help and exit.\n"
+        << "\n"
+        << "Examples:\n"
+        << "  " << name << " Resources/ronaldoAndMessi.jpg\n"
+        << "  " << name << " \"C:\\Users\\me\\Pictures\\my photo.png\"\n"
+        << "\n"
+        << "Exit codes:\n"
+        << "  0  success\n"
+        << "  1  the image could not be loaded\n"
+        << "  2  invalid command line (missing image or unknown option)\n";
+}
+
+// Reads the file as bytes and decodes it in memory. cv::imread takes a narrow
+// path on Windows, so this also works for paths with non-ASCII characters.
+bool loadImage(const std::string& path, Mat& image) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
     }
 
-    // Get original image dimensions
-    int imageWidth = img.cols;
-    int imageHeight = img.rows;
+    const std::vector<unsigned char> bytes{
+        std::istreambuf_iterator<char>(file),
+        std::istreambuf_iterator<char>()
+    };
+    if (bytes.empty()) {
+        return false;
+    }
 
-    // Character aspect ratio (fine-tune this if the output looks stretched)
-    double charAspect = 1.0;
+    image = imdecode(bytes, IMREAD_COLOR);  // always BGR, 3 channels
+    return !image.empty();
+}
 
-    // Set desired output width (number of characters per line)
-    int consoleWidth = 220;
+// Converts the image to ANSI-colored ASCII art. The result is returned as one
+// string so it can later be written to a file instead of the terminal.
+std::string toAsciiArt(const Mat& img) {
+    const int imageWidth = img.cols;
+    const int imageHeight = img.rows;
 
-    // Automatically calculate height based on image aspect ratio
-    int consoleHeight = static_cast<int>(
-        (imageHeight / static_cast<double>(imageWidth)) * consoleWidth / charAspect
+    // Automatically calculate height based on image aspect ratio.
+    const int consoleHeight = static_cast<int>(
+        (imageHeight / static_cast<double>(imageWidth)) * kConsoleWidth / kCharAspect
     );
 
-    // Compute scaling factors between image pixels and console cells
-    double scaleX = static_cast<double>(imageWidth) / consoleWidth;
-    double scaleY = static_cast<double>(imageHeight) / (consoleHeight * charAspect);
+    // Compute scaling factors between image pixels and console cells.
+    const double scaleX = static_cast<double>(imageWidth) / kConsoleWidth;
+    const double scaleY = static_cast<double>(imageHeight) / (consoleHeight * kCharAspect);
 
-    // Loop through each row (Y axis)
+    // Each cell costs an ANSI color prefix plus one character; reserving keeps
+    // large images from constantly reallocating.
+    std::string art;
+    art.reserve(static_cast<std::size_t>(kConsoleWidth) * (consoleHeight + 1) * 16);
+
     for (int y = 0; y < consoleHeight; ++y) {
-        // Loop through each column (X axis)
-        for (int x = 0; x < consoleWidth; ++x) {
-            
-            // Map console coordinates to image coordinates (with safety bounds)
-            int srcX = std::min(static_cast<int>(x * scaleX), imageWidth - 1);
-            int srcY = std::min(static_cast<int>(y * scaleY), imageHeight - 1);
+        for (int x = 0; x < kConsoleWidth; ++x) {
+            // Map console coordinates to image coordinates (with safety bounds).
+            const int srcX = std::min(static_cast<int>(x * scaleX), imageWidth - 1);
+            const int srcY = std::min(static_cast<int>(y * scaleY), imageHeight - 1);
 
-            // Access pixel color (BGR order in OpenCV)
-            Vec3b pixel = img.at<Vec3b>(srcY, srcX);
-            float R = pixel[2];
-            float G = pixel[1];
-            float B = pixel[0];
+            // Access pixel color (BGR order in OpenCV).
+            const Vec3b pixel = img.at<Vec3b>(srcY, srcX);
+            const int r = pixel[2];
+            const int g = pixel[1];
+            const int b = pixel[0];
 
-            // Compute perceived brightness (using Rec.709 luminance formula)
-            float brightness = 0.2126f * R + 0.7152f * G + 0.0722f * B;
+            // Compute perceived brightness (using Rec.709 luminance formula).
+            const float brightness = 0.2126f * r + 0.7152f * g + 0.0722f * b;
 
-            // Map brightness (0–255) to ASCII ramp index
-            int index = static_cast<int>(brightness * (asciiRamp.size() - 1) / 255.0f);
+            // Map brightness (0-255) to ASCII ramp index.
+            const int index = static_cast<int>(brightness * (kRampSize - 1) / 255.0f);
 
-            // Print ASCII character with the pixel's original RGB color
-            std::cout << "\033[38;2;" << R << ";" << G << ";" << B << "m";
-            std::cout << asciiRamp[index];
+            // Emit the character with the pixel's original RGB color.
+            art += "\033[38;2;";
+            art += std::to_string(r);
+            art += ';';
+            art += std::to_string(g);
+            art += ';';
+            art += std::to_string(b);
+            art += 'm';
+            art += kAsciiRamp[index];
         }
 
-        // New line after each console row
-        std::cout << '\n';
+        art += '\n';
     }
 
-    // Reset color formatting at the end
-    std::cout << "\033[0m";
+    // Reset color formatting at the end.
+    art += "\033[0m";
+    return art;
+}
 
+}  // namespace
+
+int main(int argc, char* argv[]) {
+#if defined(_WIN32)
+    // Make the block characters in the ramp render instead of mojibake.
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+
+    std::string imagePath;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+
+        if (arg == "-h" || arg == "--help" || arg == "/?") {
+            printUsage(std::cout, argv[0]);
+            return 0;
+        }
+
+        // Reserved for future options (--width, --chars, --save, ...).
+        if (arg.size() > 1 && arg[0] == '-') {
+            std::cerr << "Unknown option: " << arg << "\n\n";
+            printUsage(std::cerr, argv[0]);
+            return 2;
+        }
+
+        if (!imagePath.empty()) {
+            std::cerr << "Too many arguments: " << arg << "\n\n";
+            printUsage(std::cerr, argv[0]);
+            return 2;
+        }
+
+        imagePath = arg;
+    }
+
+    if (imagePath.empty()) {
+        printUsage(std::cerr, argv[0]);
+        return 2;
+    }
+
+    Mat img;
+    if (!loadImage(imagePath, img)) {
+        std::cerr << "Error: could not open image: \"" << imagePath << "\"\n";
+        return 1;
+    }
+
+    std::cout << toAsciiArt(img);
+    std::cout.flush();
     return 0;
 }
